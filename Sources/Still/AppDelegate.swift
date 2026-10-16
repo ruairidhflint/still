@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     let documents = StillDocumentController()
     private var recentMenu: NSMenu?
     private var started = false
+    private var receivedOpenRequest = false
+    private var pendingOpenRequests = 0
+    private var completedStartup = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         if let icon = Bundle.main.url(forResource: "AppIcon", withExtension: "png") {
@@ -22,9 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         started = true
-        recoverDrafts()
-        if documents.documents.isEmpty { documents.newDocument(nil) }
-        NSApp.activate(ignoringOtherApps: true)
+        restoreLastSession()
     }
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -32,9 +33,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return true
     }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        receivedOpenRequest = true
+        pendingOpenRequests += filenames.count
         for filename in filenames {
             documents.openDocument(withContentsOf: URL(fileURLWithPath: filename), display: true) { _, _, error in
+                self.pendingOpenRequests -= 1
                 if let error { NSApp.presentError(error) }
+                if self.completedStartup && self.pendingOpenRequests == 0 && self.documents.documents.isEmpty {
+                    self.documents.newDocument(nil)
+                }
             }
         }
         sender.reply(toOpenOrPrint: .success)
@@ -44,15 +51,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool { false }
     func applicationWillResignActive(_ notification: Notification) {
         for document in documents.documents.compactMap({ $0 as? MarkdownDocument }) { document.persistRecovery() }
+        SessionMemory.shared.flush()
     }
     func applicationWillTerminate(_ notification: Notification) {
+        SessionMemory.shared.flush()
         // AppKit has resolved save/discard decisions by now. Untitled documents kept open on quit
         // retain recovery snapshots; named files are checked against disk before recovering.
         for document in documents.documents.compactMap({ $0 as? MarkdownDocument }) where document.fileURL == nil && !document.text.isEmpty {
             document.persistRecovery()
         }
     }
-    private func recoverDrafts() {
+    private func restoreLastSession() {
+        let session = SessionMemory.shared.lastSession
+        let recovered = recoverDrafts(session: session)
+        // Opening a file from Finder takes priority over the previous session.
+        guard !receivedOpenRequest else { return finishStartup() }
+        if let recovered {
+            return finishStartup(restoring: recovered, position: session?.position)
+        }
+        guard let path = session?.filePath else { return finishStartup() }
+        documents.openDocument(withContentsOf: URL(fileURLWithPath: path), display: true) { document, _, _ in
+            // A deleted, moved or unreadable last file simply leaves a fresh page.
+            let editor = document?.windowControllers.first as? EditorWindowController
+            self.finishStartup(restoring: editor, position: session?.position)
+        }
+    }
+
+    private func finishStartup(restoring editor: EditorWindowController? = nil, position: WritingPosition? = nil) {
+        completedStartup = true
+        if documents.documents.isEmpty && pendingOpenRequests == 0 { documents.newDocument(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            if !self.receivedOpenRequest, let editor, let position {
+                editor.window?.makeKeyAndOrderFront(nil)
+                editor.restorePosition(position)
+            }
+            SessionMemory.shared.startTracking()
+            for document in self.documents.documents {
+                (document.windowControllers.first as? EditorWindowController)?.rememberPosition()
+            }
+        }
+    }
+
+    private func recoverDrafts(session: WritingSession?) -> EditorWindowController? {
+        var lastEditor: EditorWindowController?
         do {
             for draft in try MarkdownDocument.recoveryStore.drafts() {
                 if let path = draft.originalPath,
@@ -67,8 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 document.makeWindowControllers()
                 document.showWindows()
                 document.windowControllers.first?.window?.titleVisibility = .visible
+                if session?.matches(draft) == true {
+                    lastEditor = document.windowControllers.first as? EditorWindowController
+                }
             }
         } catch { NSApp.presentError(error) }
+        return lastEditor
     }
 
     private func item(_ title: String, _ action: Selector?, _ key: String = "", modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil, tag: Int = 0) -> NSMenuItem {

@@ -6,11 +6,13 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
     private let scrollView = NSScrollView()
     private let styler = MarkdownStyler()
     private var appearanceObserver: NSObjectProtocol?
+    private var scrollObserver: NSObjectProtocol?
+    private var preferencesObserver: NSObjectProtocol?
     private var activeParagraph = NSRange(location: NSNotFound, length: 0)
     private var loading = false
     private var restylePending = false
 
-    init(document: MarkdownDocument) {
+    init(document: MarkdownDocument, preferences: WritingPreferences = .shared) {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         let container = NSTextContainer(containerSize: NSSize(width: 680, height: CGFloat.greatestFiniteMagnitude))
@@ -52,7 +54,8 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isContinuousSpellCheckingEnabled = false
+        textView.preferences = preferences
+        textView.isContinuousSpellCheckingEnabled = preferences.checkSpelling
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.isAutomaticTextCompletionEnabled = false
@@ -62,16 +65,46 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
         textView.setAccessibilityLabel("Writing")
-        textView.setAccessibilityHelp("Markdown editor. Formatting syntax appears in the paragraph you are editing.")
+        textView.setAccessibilityHelp("Markdown editor. Bold and italic stay formatted. Other syntax appears in the paragraph you are editing.")
         layout.delegate = styler
         textView.onSelection = { [weak self] in self?.restyle() }
         appearanceObserver = NotificationCenter.default.addObserver(forName: .writingAppearanceChanged, object: nil, queue: .main) { [weak self] _ in self?.applyAppearance() }
+        preferencesObserver = NotificationCenter.default.addObserver(forName: .writingPreferencesChanged, object: preferences, queue: .main) { [weak self] _ in
+            self?.textView.isContinuousSpellCheckingEnabled = preferences.checkSpelling
+        }
+        scrollObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in self?.rememberPosition() }
         loadText(document.text)
         applyAppearance()
         window.makeFirstResponder(textView)
     }
     required init?(coder: NSCoder) { fatalError("Still uses programmatic windows") }
-    deinit { if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) } }
+    deinit {
+        for observer in [appearanceObserver, scrollObserver, preferencesObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+    var writingPosition: WritingPosition {
+        WritingPosition(selection: textView.selectedRange(), scrollOffset: scrollView.contentView.bounds.origin.y)
+    }
+    func restorePosition(_ position: WritingPosition) {
+        loading = true
+        defer { loading = false }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        textView.setSelectedRange(position.selection(in: textView.string))
+        restyle()
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
+            textView.sizeToFit()
+        }
+        let maximum = Double(textView.bounds.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: position.scrollOffset(maximum: maximum)))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+    func rememberPosition() {
+        guard !loading, window?.isKeyWindow == true, let document = document as? MarkdownDocument,
+              document.fileURL != nil || !document.text.isEmpty else { return }
+        SessionMemory.shared.remember(filePath: document.fileURL?.path, recoveryID: document.recoveryID, position: writingPosition)
+    }
     func loadText(_ text: String) {
         loading = true
         let selected = textView.selectedRange()
@@ -98,12 +131,14 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
     func textDidChange(_ notification: Notification) {
         guard !loading, !styler.applying else { return }
         (document as? MarkdownDocument)?.edited(textView.string)
+        rememberPosition()
         // Wait until TextKit completes input/undo before changing display attributes.
         scheduleRestyle()
     }
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !loading, !styler.applying else { return }
         if Markdown.activeParagraph(in: textView.string, selection: textView.selectedRange()) != activeParagraph { scheduleRestyle() }
+        rememberPosition()
     }
     private func scheduleRestyle() {
         guard !restylePending else { return }
@@ -115,6 +150,9 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
         }
     }
     func undoManager(for view: NSTextView) -> UndoManager? { document?.undoManager }
-    func windowDidResignKey(_ notification: Notification) { (document as? MarkdownDocument)?.persistRecovery() }
-    func windowDidBecomeKey(_ notification: Notification) { applyAppearance() }
+    func windowDidResignKey(_ notification: Notification) {
+        (document as? MarkdownDocument)?.persistRecovery()
+        SessionMemory.shared.flush()
+    }
+    func windowDidBecomeKey(_ notification: Notification) { applyAppearance(); rememberPosition() }
 }

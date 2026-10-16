@@ -5,8 +5,7 @@ import WritingCore
 final class MarkdownDocument: NSDocument {
     static let markdownType = "net.daringfireball.markdown"
     static var recoveryStore: RecoveryStore {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return RecoveryStore(directory: support.appendingPathComponent("Still/Recovery", isDirectory: true))
+        RecoveryStore(directory: ApplicationStorage.directory.appendingPathComponent("Recovery", isDirectory: true))
     }
     private var file = TextFile()
     var text: String { file.text }
@@ -74,11 +73,12 @@ final class MarkdownDocument: NSDocument {
     override func save(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType, completionHandler: @escaping (Error?) -> Void) {
         let savedText = file.text
         super.save(to: url, ofType: typeName, for: saveOperation) { [weak self] error in
-            if let self, error == nil, self.file.text == savedText,
+            if let self, error == nil,
                saveOperation == .saveOperation || saveOperation == .saveAsOperation || saveOperation == .autosaveInPlaceOperation {
                 // Untitled native draft files do not replace our independent recovery snapshot.
-                if self.fileURL != nil && !self.isDraft { try? Self.recoveryStore.remove(self.recoveryID) }
+                if self.file.text == savedText && self.fileURL != nil && !self.isDraft { try? Self.recoveryStore.remove(self.recoveryID) }
                 if saveOperation == .saveAsOperation || saveOperation == .saveOperation { self.recoveredName = nil }
+                if let url = self.fileURL { SessionMemory.shared.saved(recoveryID: self.recoveryID, to: url) }
             }
             completionHandler(error)
         }

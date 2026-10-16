@@ -90,4 +90,77 @@ final class EditorTests: XCTestCase {
         XCTAssertEqual(reopened.text, expected)
         document.close(); reopened.close()
     }
+    func testBoldAndItalicShortcutsHideMarkersInActiveParagraph() throws {
+        for marker in ["**", "*"] {
+            let (document, editor) = try editor("A quiet thought")
+            let view = editor.textView
+            view.setSelectedRange(NSRange(location: 2, length: 5))
+            if marker == "**" { view.bold(nil) } else { view.italic(nil) }
+            editor.restyle()
+            XCTAssertEqual(document.text, "A \(marker)quiet\(marker) thought")
+            XCTAssertEqual((view.string as NSString).substring(with: view.selectedRange()), "quiet")
+            let markerOffsets = [2, 2 + marker.count + 5]
+            view.layoutManager?.ensureLayout(for: view.textContainer!)
+            for offset in markerOffsets {
+                XCTAssertEqual(view.textStorage?.attribute(.hiddenMarkdown, at: offset, effectiveRange: nil) as? Bool, true)
+                let glyph = view.layoutManager!.glyphIndexForCharacter(at: offset)
+                XCTAssertEqual(view.layoutManager?.propertyForGlyph(at: glyph), .null)
+            }
+            // Collapsing the selection and continuing in the same paragraph keeps the clean display.
+            let selected = view.selectedRange()
+            view.setSelectedRange(NSRange(location: selected.location + 2, length: 0))
+            editor.restyle()
+            XCTAssertEqual(view.textStorage?.attribute(.hiddenMarkdown, at: 2, effectiveRange: nil) as? Bool, true)
+            view.toggleSyntax(nil)
+            XCTAssertNil(view.textStorage?.attribute(.hiddenMarkdown, at: 2, effectiveRange: nil))
+            view.toggleSyntax(nil)
+            view.setSelectedRange(selected)
+            if marker == "**" { view.bold(nil) } else { view.italic(nil) }
+            XCTAssertEqual(document.text, "A quiet thought")
+            document.close()
+        }
+    }
+    func testRestoreSelectionAndScrollAfterLayout() throws {
+        let text = (1...80).map { "## Paragraph \($0)\n\nSome **thoughts** about writing 🌿, with enough text to fill a few lines.\n\n" }.joined()
+        let (document, editor) = try editor(text)
+        defer { document.close() }
+        let selection = (text as NSString).range(of: "Some **thoughts**", options: [], range: NSRange(location: 1800, length: 500))
+        XCTAssertNotEqual(selection.location, NSNotFound)
+        let expected = WritingPosition(selection: selection, scrollOffset: 1200)
+        editor.restorePosition(expected)
+        XCTAssertEqual(editor.writingPosition.selection, expected.selection)
+        XCTAssertEqual(editor.writingPosition.scrollOffset, expected.scrollOffset, accuracy: 1)
+        XCTAssertEqual(document.text, text)
+        XCTAssertFalse(document.isDocumentEdited)
+        editor.loadText("Shorter 🌿")
+        editor.restorePosition(expected)
+        XCTAssertEqual(editor.writingPosition.selection, NSRange(location: ("Shorter 🌿" as NSString).length, length: 0))
+        XCTAssertEqual(editor.writingPosition.scrollOffset, 0)
+    }
+    func testSessionDoesNotOverwriteStartupAndTracksSaveAs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("still-session-editor-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SessionStore(url: directory.appendingPathComponent("LastSession.json"))
+        let id = UUID()
+        let previous = WritingSession(filePath: "/tmp/Original.md", recoveryID: id,
+                                      position: WritingPosition(selection: NSRange(location: 500, length: 0), scrollOffset: 900))
+        try store.save(previous)
+        let memory = SessionMemory(store: store)
+        let beginning = WritingPosition(selection: NSRange(location: 0, length: 0), scrollOffset: 0)
+        memory.remember(filePath: nil, recoveryID: UUID(), position: beginning)
+        memory.flush()
+        XCTAssertEqual(store.load(), previous)
+        memory.startTracking()
+        let moved = URL(fileURLWithPath: "/tmp/Renamed.md")
+        memory.saved(recoveryID: UUID(), to: moved)
+        XCTAssertEqual(store.load(), previous)
+        memory.saved(recoveryID: id, to: moved)
+        XCTAssertEqual(store.load()?.filePath, moved.path)
+        XCTAssertEqual(store.load()?.position, previous.position)
+        let nextID = UUID()
+        memory.remember(filePath: nil, recoveryID: nextID, position: beginning)
+        memory.flush()
+        XCTAssertEqual(store.load()?.recoveryID, nextID)
+        XCTAssertNil(store.load()?.filePath)
+    }
 }

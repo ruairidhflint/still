@@ -78,6 +78,43 @@ final class WritingCoreTests: XCTestCase {
         XCTAssertEqual(Markdown.wordCount(in: "Don't stop writing."), 3)
         XCTAssertEqual(Markdown.wordCount(in: "***One*** **two**"), 2)
     }
+    func testSessionRoundTripAndInvalidState() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("still-session-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SessionStore(url: directory.appendingPathComponent("LastSession.json"))
+        XCTAssertNil(store.load())
+        let session = WritingSession(filePath: "/tmp/A draft 🌿.md", recoveryID: UUID(),
+                                     position: WritingPosition(selection: NSRange(location: 120, length: 9), scrollOffset: 815.5))
+        try store.save(session)
+        XCTAssertEqual(store.load(), session)
+        let unsaved = WritingSession(filePath: nil, recoveryID: UUID(), position: session.position)
+        try store.save(unsaved)
+        XCTAssertEqual(store.load(), unsaved)
+        try Data("incomplete JSON".utf8).write(to: store.url)
+        XCTAssertNil(store.load())
+    }
+    func testRestoredPositionClampsToChangedTextAndUnicodeBoundaries() {
+        let outside = WritingPosition(selection: NSRange(location: Int.max, length: Int.max), scrollOffset: 5000)
+        XCTAssertEqual(outside.selection(in: "Short"), NSRange(location: 5, length: 0))
+        XCTAssertEqual(outside.selection(in: ""), NSRange(location: 0, length: 0))
+        XCTAssertEqual(outside.scrollOffset(maximum: 200), 200)
+        XCTAssertEqual(outside.scrollOffset(maximum: -20), 0)
+        let insideEmoji = WritingPosition(selection: NSRange(location: 2, length: 0), scrollOffset: -.infinity)
+        XCTAssertEqual(insideEmoji.selection(in: "A🌿B"), NSRange(location: 1, length: 0))
+        XCTAssertEqual(insideEmoji.scrollOffset(maximum: 200), 0)
+        let partialEmoji = WritingPosition(selection: NSRange(location: 2, length: 1), scrollOffset: 0)
+        XCTAssertEqual(partialEmoji.selection(in: "A🌿B"), NSRange(location: 1, length: 2))
+    }
+    func testSessionFindsRecoveryBeforeReopeningOriginal() {
+        let id = UUID()
+        let position = WritingPosition(selection: NSRange(location: 0, length: 0), scrollOffset: 0)
+        let unsaved = WritingSession(filePath: nil, recoveryID: id, position: position)
+        XCTAssertTrue(unsaved.matches(RecoveredDraft(id: id, text: "Draft")))
+        XCTAssertFalse(unsaved.matches(RecoveredDraft(id: UUID(), text: "Unrelated")))
+        let saved = WritingSession(filePath: "/tmp/draft.md", recoveryID: id, position: position)
+        XCTAssertTrue(saved.matches(RecoveredDraft(id: UUID(), text: "Newer changes", originalPath: "/tmp/draft.md")))
+        XCTAssertFalse(saved.matches(RecoveredDraft(id: UUID(), text: "Unrelated", originalPath: "/tmp/other.md")))
+    }
     func testLongManuscriptAndMalformedSyntax() {
         let paragraph = "A paragraph with **bold prose**, *emphasis*, and [a source](https://example.com).\n\n"
         let manuscript = String(repeating: paragraph, count: 2000)

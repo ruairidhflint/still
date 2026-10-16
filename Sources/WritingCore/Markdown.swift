@@ -4,7 +4,7 @@ import Foundation
 public struct MarkdownSpan: Equatable {
     public enum Kind: Equatable {
         case heading(Int), strong, emphasis, code, quote, list, link(String)
-        case footnoteReference(String), footnoteDefinition(String), marker
+        case footnoteReference(String), footnoteDefinition(String), marker, emphasisMarker
     }
     public var range: NSRange
     public var kind: Kind
@@ -105,8 +105,8 @@ public enum Markdown {
         for (pattern, kinds, markerLength) in emphasisPatterns {
             for match in matches(pattern, in: text) where !isProtected(match.range) {
                 for kind in kinds { add(match.range(at: 1), kind) }
-                add(NSRange(location: match.range.location, length: markerLength), .marker)
-                add(NSRange(location: NSMaxRange(match.range) - markerLength, length: markerLength), .marker)
+                add(NSRange(location: match.range.location, length: markerLength), .emphasisMarker)
+                add(NSRange(location: NSMaxRange(match.range) - markerLength, length: markerLength), .emphasisMarker)
             }
         }
         return spans
@@ -152,7 +152,7 @@ public enum Markdown {
 
     public static func wordCount(in string: String) -> Int {
         var prose = string
-        let markers = spans(in: string).filter { $0.kind == .marker }.map(\.range)
+        let markers = spans(in: string).filter { $0.kind == .marker || $0.kind == .emphasisMarker }.map(\.range)
         // Merge overlapping ranges before replacing; combined emphasis can share delimiters.
         var removed = IndexSet()
         for range in markers { removed.insert(integersIn: range.location..<NSMaxRange(range)) }

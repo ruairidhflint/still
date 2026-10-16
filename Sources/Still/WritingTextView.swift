@@ -5,6 +5,7 @@ final class WritingTextView: NSTextView {
     var onEdit: (() -> Void)?
     var onSelection: (() -> Void)?
     var syntaxVisible = false
+    var preferences = WritingPreferences.shared
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -17,6 +18,11 @@ final class WritingTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
+
+    override func toggleContinuousSpellChecking(_ sender: Any?) {
+        super.toggleContinuousSpellChecking(sender)
+        preferences.checkSpelling = isContinuousSpellCheckingEnabled
+    }
 
     override func insertNewline(_ sender: Any?) {
         if !hasMarkedText(), let edit = Markdown.continuation(in: string, selection: selectedRange()) {
