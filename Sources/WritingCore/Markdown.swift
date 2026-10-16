@@ -4,7 +4,7 @@ import Foundation
 public struct MarkdownSpan: Equatable {
     public enum Kind: Equatable {
         case heading(Int), strong, emphasis, code, quote, list, link(String)
-        case footnoteReference(String), footnoteDefinition(String), marker, emphasisMarker
+        case footnoteReference(String), footnoteDefinition(String), marker, emphasisMarker, headingMarker
     }
     public var range: NSRange
     public var kind: Kind
@@ -53,9 +53,9 @@ public enum Markdown {
                 if let match = matches(#"^ {0,3}(#{1,6})[\t ]+(.+?)\s*$"#, in: content).first {
                     let level = match.range(at: 1).length
                     add(line, .heading(level))
-                    add(NSRange(location: line.location, length: match.range(at: 2).location), .marker)
+                    add(NSRange(location: line.location, length: match.range(at: 2).location), .headingMarker)
                     if let closing = matches(#"[\t ]+#+[\t ]*$"#, in: trimmed as NSString).first {
-                        add(NSRange(location: line.location + closing.range.location, length: closing.range.length), .marker)
+                        add(NSRange(location: line.location + closing.range.location, length: closing.range.length), .headingMarker)
                     }
                 }
                 if let match = matches(#"^ {0,3}(>\s?)+"#, in: content).first {
@@ -152,7 +152,7 @@ public enum Markdown {
 
     public static func wordCount(in string: String) -> Int {
         var prose = string
-        let markers = spans(in: string).filter { $0.kind == .marker || $0.kind == .emphasisMarker }.map(\.range)
+        let markers = spans(in: string).filter { [.marker, .emphasisMarker, .headingMarker].contains($0.kind) }.map(\.range)
         // Merge overlapping ranges before replacing; combined emphasis can share delimiters.
         var removed = IndexSet()
         for range in markers { removed.insert(integersIn: range.location..<NSMaxRange(range)) }

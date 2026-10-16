@@ -2,9 +2,9 @@
 
 A small native Mac app for quiet Markdown writing. Run `zsh scripts/run.sh` to build and open **dist/Still.app**. You can drag it into Applications if you want to keep it there.
 
-The window is a centred page. Markdown formats as you write, with syntax visible in the current paragraph. Appearance and other controls live in the Mac menu bar.
+The window is a centred page. Markdown formats as you write. Appearance and other controls live in the Mac menu bar.
 
-Completed bold and italic text keep their asterisks hidden while you edit, including after Command–B and Command–I. **View → Show Markdown Syntax** reveals them when you want to edit the raw Markdown.
+Completed headings, bold and italic text keep their markers hidden while you edit, including after formatting shortcuts. Other syntax, such as link destinations, appears in the active paragraph. **View → Show Markdown Syntax** reveals all markers when you want to edit the raw Markdown.
 
 - Warm light, warm dark, or system appearance.
 - Charter serif or the system sans serif, with adjustable text size.

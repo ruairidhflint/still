@@ -51,8 +51,8 @@ final class MarkdownStyler: NSObject, NSLayoutManagerDelegate {
                 }
             case .footnoteDefinition:
                 storage.addAttributes([.font: appearance.font(size: appearance.size * 0.85), .foregroundColor: appearance.secondary], range: span.range)
-            case .marker, .emphasisMarker:
-                // Completed bold/italic stays rendered while editing, including after Cmd+B/Cmd+I.
+            case .marker, .emphasisMarker, .headingMarker:
+                // Completed headings and emphasis stay rendered while editing, including after shortcuts.
                 // Explicit source mode still exposes every delimiter for direct Markdown edits.
                 if showSyntax || (span.kind == .marker && NSIntersectionRange(active, span.range).length > 0) {
                     storage.addAttribute(.foregroundColor, value: appearance.secondary, range: span.range)

@@ -9,12 +9,22 @@ final class WritingTextView: NSTextView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        let column = min(680, max(240, newSize.width - 64))
-        let horizontal = max(24, (newSize.width - column) / 2)
+        updateWritingColumn()
+        updateInsertionPointStateAndRestartTimer(true)
+    }
+
+    override func layout() {
+        super.layout()
+        updateWritingColumn()
+    }
+
+    private func updateWritingColumn() {
+        // TextKit can constrain a requested frame size. Centre within the actual view bounds.
+        let column = min(680, max(240, bounds.width - 64))
+        let horizontal = max(24, (bounds.width - column) / 2)
         let inset = NSSize(width: horizontal, height: 78)
         if textContainerInset != inset { textContainerInset = inset }
         if textContainer?.containerSize.width != column { textContainer?.containerSize = NSSize(width: column, height: .greatestFiniteMagnitude) }
-        updateInsertionPointStateAndRestartTimer(true)
     }
 
     override func paste(_ sender: Any?) { pasteAsPlainText(sender) }

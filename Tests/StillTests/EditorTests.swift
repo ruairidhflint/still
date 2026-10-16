@@ -15,8 +15,8 @@ final class EditorTests: XCTestCase {
         document.makeWindowControllers()
         return (document, document.windowControllers[0] as! EditorWindowController)
     }
-    func testStylingPreservesSourceAndRevealsOnlyActiveParagraph() throws {
-        let source = "# A heading\n\nSome **bold** text.\n\nLast paragraph."
+    func testStylingPreservesSourceAndRevealsOnlyActiveQuoteSyntax() throws {
+        let source = "# A heading\n\n> A quotation\n\nSome **bold** text.\n\nLast paragraph."
         let (document, editor) = try editor(source)
         let view = editor.textView
         view.setSelectedRange(NSRange(location: (source as NSString).length, length: 0))
@@ -26,10 +26,38 @@ final class EditorTests: XCTestCase {
         XCTAssertEqual(view.textStorage?.attribute(.hiddenMarkdown, at: 0, effectiveRange: nil) as? Bool, true)
         view.layoutManager?.ensureLayout(for: view.textContainer!)
         XCTAssertEqual(view.layoutManager?.propertyForGlyph(at: 0), .null)
-        view.setSelectedRange(NSRange(location: 4, length: 0))
+        let quote = (source as NSString).range(of: "> A quotation")
+        XCTAssertEqual(view.textStorage?.attribute(.hiddenMarkdown, at: quote.location, effectiveRange: nil) as? Bool, true)
+        view.setSelectedRange(NSRange(location: quote.location + 4, length: 0))
         editor.restyle()
-        XCTAssertNil(view.textStorage?.attribute(.hiddenMarkdown, at: 0, effectiveRange: nil))
+        XCTAssertNil(view.textStorage?.attribute(.hiddenMarkdown, at: quote.location, effectiveRange: nil))
         document.close()
+    }
+    func testHeadingsStayRenderedWhenSelectedAndCanReturnToBody() throws {
+        let (document, editor) = try editor("A heading\n\nBody text.")
+        defer { document.close() }
+        let view = editor.textView
+        let command = NSMenuItem()
+        for level in 1...3 {
+            command.tag = level
+            view.heading(command)
+            editor.restyle()
+            let prefix = String(repeating: "#", count: level) + " "
+            XCTAssertEqual(document.text, prefix + "A heading\n\nBody text.")
+            for selection in [NSRange(location: level + 3, length: 0), NSRange(location: 0, length: level)] {
+                view.setSelectedRange(selection)
+                editor.restyle()
+                XCTAssertEqual(view.textStorage?.attribute(.hiddenMarkdown, at: 0, effectiveRange: nil) as? Bool, true)
+                view.layoutManager?.ensureLayout(for: view.textContainer!)
+                XCTAssertEqual(view.layoutManager?.propertyForGlyph(at: 0), .null)
+            }
+            view.toggleSyntax(nil)
+            XCTAssertNil(view.textStorage?.attribute(.hiddenMarkdown, at: 0, effectiveRange: nil))
+            view.toggleSyntax(nil)
+        }
+        command.tag = 0
+        view.heading(command)
+        XCTAssertEqual(document.text, "A heading\n\nBody text.")
     }
     func testTypingAndUndoUpdateDocument() throws {
         let (document, editor) = try editor()
@@ -136,6 +164,36 @@ final class EditorTests: XCTestCase {
         editor.restorePosition(expected)
         XCTAssertEqual(editor.writingPosition.selection, NSRange(location: ("Shorter 🌿" as NSString).length, length: 0))
         XCTAssertEqual(editor.writingPosition.scrollOffset, 0)
+    }
+    func testWritingColumnStaysCenteredAfterResizeAndSessionRestore() throws {
+        let (document, editor) = try editor("# A heading\n\n" + String(repeating: "A paragraph of writing with enough words to wrap onto another line.\n\n", count: 30))
+        defer { document.close() }
+        let view = editor.textView
+        let window = try XCTUnwrap(editor.window)
+        let clip = try XCTUnwrap(view.enclosingScrollView?.contentView)
+        func checkMargins(_ label: String) throws {
+            let origin = view.convert(view.textContainerOrigin, to: clip)
+            let columnWidth = try XCTUnwrap(view.textContainer?.containerSize.width)
+            let left = origin.x - clip.bounds.minX
+            let right = clip.bounds.maxX - origin.x - columnWidth
+            XCTAssertEqual(left, right, accuracy: 1,
+                           "\(label): clip \(clip.bounds), text view \(view.frame), inset \(view.textContainerInset), column \(columnWidth)")
+            XCTAssertLessThanOrEqual(columnWidth, 680)
+        }
+        try checkMargins("Initial window")
+        for width: CGFloat in [1000, 1512, 700, 1800, 420] {
+            window.setContentSize(NSSize(width: width, height: 780))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try checkMargins("After resizing to \(width)")
+            editor.restorePosition(WritingPosition(selection: NSRange(location: 20, length: 0), scrollOffset: 200))
+            try checkMargins("After restoring at \(width)")
+        }
+        editor.loadText("# A title\n\nA short draft.")
+        window.setContentSize(NSSize(width: 1512, height: 933))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try checkMargins("Short draft after resizing")
+        editor.restorePosition(WritingPosition(selection: NSRange(location: 0, length: 1), scrollOffset: 0))
+        try checkMargins("Short draft after restoring")
     }
     func testSessionDoesNotOverwriteStartupAndTracksSaveAs() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("still-session-editor-\(UUID())")

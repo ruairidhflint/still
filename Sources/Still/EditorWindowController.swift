@@ -64,8 +64,11 @@ final class EditorWindowController: NSWindowController, NSTextViewDelegate, NSWi
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
+        // A view created at its final size receives no resize callback. Initialise its column now,
+        // using the restored window's viewport rather than the text view's construction-time size.
+        textView.setFrameSize(scrollView.contentSize)
         textView.setAccessibilityLabel("Writing")
-        textView.setAccessibilityHelp("Markdown editor. Bold and italic stay formatted. Other syntax appears in the paragraph you are editing.")
+        textView.setAccessibilityHelp("Markdown editor. Headings, bold and italic stay formatted. Other syntax appears in the paragraph you are editing.")
         layout.delegate = styler
         textView.onSelection = { [weak self] in self?.restyle() }
         appearanceObserver = NotificationCenter.default.addObserver(forName: .writingAppearanceChanged, object: nil, queue: .main) { [weak self] _ in self?.applyAppearance() }
