@@ -3,6 +3,15 @@ import AppKit
 import WritingCore
 @testable import Still
 
+private final class RecordingLayoutManager: NSLayoutManager {
+    var invalidatedGlyphRanges: [NSRange] = []
+
+    override func invalidateGlyphs(forCharacterRange range: NSRange, changeInLength delta: Int, actualCharacterRange: NSRangePointer?) {
+        invalidatedGlyphRanges.append(range)
+        super.invalidateGlyphs(forCharacterRange: range, changeInLength: delta, actualCharacterRange: actualCharacterRange)
+    }
+}
+
 @MainActor
 final class EditorTests: XCTestCase {
     private static let documents = StillDocumentController()
@@ -147,6 +156,77 @@ final class EditorTests: XCTestCase {
             XCTAssertEqual(document.text, "A quiet thought")
             document.close()
         }
+    }
+    func testTypingBelowItalicsKeepsEarlierGlyphsAndLinePositions() throws {
+        let source = "If you have ever been unfortunate enough to need to be prescribed exposure therapy, you'll *fortunately* know that it can be exceedingly effective. In a roundabout way, I am prescribing myself exposure to thinking. What does that mean?"
+        let (document, editor) = try editor(source)
+        defer { document.close() }
+        let view = editor.textView
+        let storage = try XCTUnwrap(view.textStorage)
+        let container = try XCTUnwrap(view.textContainer)
+        let layout = RecordingLayoutManager()
+        container.replaceLayoutManager(layout)
+        // The layout manager's delegate is weak; keep the styler alive for this test.
+        let styler = MarkdownStyler()
+        layout.delegate = styler
+        view.setSelectedRange(NSRange(location: storage.length, length: 0))
+        styler.apply(to: view, showSyntax: false)
+        layout.ensureLayout(for: container)
+        let emphasis = (source as NSString).range(of: "fortunately")
+        let glyph = layout.glyphIndexForCharacter(at: emphasis.location)
+        let baseline = layout.location(forGlyphAt: glyph)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let original = storage.attributedSubstring(from: NSRange(location: 0, length: storage.length))
+
+        // Cover both a later wrapped line in the same paragraph and a new paragraph.
+        for text in [" More words on a later line.", "\n\nAnother paragraph with **bold** and café 🌿."] {
+            for character in text {
+                view.insertText(String(character), replacementRange: view.selectedRange())
+                layout.invalidatedGlyphRanges.removeAll()
+                styler.apply(to: view, showSyntax: false)
+                XCTAssertFalse(layout.invalidatedGlyphRanges.contains { NSIntersectionRange($0, emphasis).length > 0 },
+                               "Typing later in the document must not regenerate unchanged italic glyphs")
+                XCTAssertTrue(storage.attributedSubstring(from: NSRange(location: 0, length: original.length)).isEqual(to: original))
+                layout.ensureLayout(for: container)
+                XCTAssertEqual(layout.location(forGlyphAt: glyph), baseline)
+                XCTAssertEqual(layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil), line)
+            }
+        }
+        layout.invalidatedGlyphRanges.removeAll()
+        styler.apply(to: view, showSyntax: false)
+        XCTAssertTrue(layout.invalidatedGlyphRanges.isEmpty, "An unchanged document needs no glyph invalidation")
+        XCTAssertEqual(document.text, view.string)
+    }
+
+    func testCompletingAndRemovingEmphasisUpdatesFormattingAndHiddenGlyphs() throws {
+        let (document, editor) = try editor("A *quiet")
+        defer { document.close() }
+        let view = editor.textView
+        let storage = try XCTUnwrap(view.textStorage)
+        let layout = try XCTUnwrap(view.layoutManager)
+        let container = try XCTUnwrap(view.textContainer)
+        func checkEmphasis(_ formatted: Bool, syntaxVisible: Bool = false) throws {
+            editor.restyle()
+            layout.ensureLayout(for: container)
+            let font = try XCTUnwrap(storage.attribute(.font, at: 3, effectiveRange: nil) as? NSFont)
+            XCTAssertEqual(NSFontManager.shared.traits(of: font).contains(.italicFontMask), formatted)
+            for offset in formatted ? [2, storage.length - 1] : [2] {
+                let hidden = formatted && !syntaxVisible
+                XCTAssertEqual(storage.attribute(.hiddenMarkdown, at: offset, effectiveRange: nil) as? Bool == true, hidden)
+                XCTAssertEqual(layout.propertyForGlyph(at: layout.glyphIndexForCharacter(at: offset)).contains(.null), hidden)
+            }
+        }
+        try checkEmphasis(false)
+        view.setSelectedRange(NSRange(location: storage.length, length: 0))
+        view.insertText("*", replacementRange: view.selectedRange())
+        try checkEmphasis(true)
+        view.toggleSyntax(nil)
+        try checkEmphasis(true, syntaxVisible: true)
+        view.toggleSyntax(nil)
+        try checkEmphasis(true)
+        view.deleteBackward(nil)
+        try checkEmphasis(false)
+        XCTAssertEqual(document.text, "A *quiet")
     }
     func testRestoreSelectionAndScrollAfterLayout() throws {
         let text = (1...80).map { "## Paragraph \($0)\n\nSome **thoughts** about writing 🌿, with enough text to fill a few lines.\n\n" }.joined()

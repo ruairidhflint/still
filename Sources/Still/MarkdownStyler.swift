@@ -16,56 +16,75 @@ final class MarkdownStyler: NSObject, NSLayoutManagerDelegate {
         if text != cachedText { cachedText = text; cachedSpans = Markdown.spans(in: text) }
         let active = Markdown.activeParagraph(in: text, selection: view.selectedRange())
         let all = NSRange(location: 0, length: storage.length)
-        storage.beginEditing()
-        storage.setAttributes(appearance.attributes, range: all)
+        // Compose the result away from TextKit. Resetting live fonts and hidden markers on
+        // every keystroke regenerates unchanged lines, which can make mixed-font lines jitter.
+        let styled = NSMutableAttributedString(string: text, attributes: appearance.attributes)
         for span in cachedSpans where NSMaxRange(span.range) <= storage.length {
             switch span.kind {
             case .heading(let level):
                 let sizes: [CGFloat] = [1.72, 1.36, 1.14, 1.04, 1, 1]
                 let font = NSFontManager.shared.convert(appearance.font(size: appearance.size * sizes[level - 1]), toHaveTrait: .boldFontMask)
-                storage.addAttribute(.font, value: font, range: span.range)
+                styled.addAttribute(.font, value: font, range: span.range)
                 let paragraph = appearance.paragraph.mutableCopy() as! NSMutableParagraphStyle
                 paragraph.paragraphSpacing = 5
-                storage.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
+                styled.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
             case .strong, .emphasis:
                 let trait: NSFontTraitMask = span.kind == .strong ? .boldFontMask : .italicFontMask
-                storage.enumerateAttribute(.font, in: span.range) { value, range, _ in
-                    if let font = value as? NSFont { storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: range) }
+                styled.enumerateAttribute(.font, in: span.range) { value, range, _ in
+                    if let font = value as? NSFont { styled.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: range) }
                 }
             case .code:
-                storage.addAttributes([.font: NSFont.monospacedSystemFont(ofSize: appearance.size * 0.85, weight: .regular), .foregroundColor: appearance.secondary], range: span.range)
+                styled.addAttributes([.font: NSFont.monospacedSystemFont(ofSize: appearance.size * 0.85, weight: .regular), .foregroundColor: appearance.secondary], range: span.range)
             case .quote:
-                storage.addAttributes([.foregroundColor: appearance.secondary, .font: NSFontManager.shared.convert(appearance.font(), toHaveTrait: .italicFontMask)], range: span.range)
+                styled.addAttributes([.foregroundColor: appearance.secondary, .font: NSFontManager.shared.convert(appearance.font(), toHaveTrait: .italicFontMask)], range: span.range)
                 let paragraph = appearance.paragraph.mutableCopy() as! NSMutableParagraphStyle
                 paragraph.headIndent = 22; paragraph.firstLineHeadIndent = 22
-                storage.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
+                styled.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
             case .list:
                 let paragraph = appearance.paragraph.mutableCopy() as! NSMutableParagraphStyle
                 paragraph.headIndent = appearance.size
-                storage.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
+                styled.addAttribute(.paragraphStyle, value: paragraph, range: span.range)
             case .link:
-                storage.addAttributes([.foregroundColor: appearance.accent, .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: appearance.accent.withAlphaComponent(0.4)], range: span.range)
+                styled.addAttributes([.foregroundColor: appearance.accent, .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: appearance.accent.withAlphaComponent(0.4)], range: span.range)
             case .footnoteReference:
                 if !showSyntax && NSIntersectionRange(active, span.range).length == 0 {
-                    storage.addAttributes([.font: appearance.font(size: appearance.size * 0.67), .baselineOffset: appearance.size * 0.32, .foregroundColor: appearance.accent], range: span.range)
+                    styled.addAttributes([.font: appearance.font(size: appearance.size * 0.67), .baselineOffset: appearance.size * 0.32, .foregroundColor: appearance.accent], range: span.range)
                 }
             case .footnoteDefinition:
-                storage.addAttributes([.font: appearance.font(size: appearance.size * 0.85), .foregroundColor: appearance.secondary], range: span.range)
+                styled.addAttributes([.font: appearance.font(size: appearance.size * 0.85), .foregroundColor: appearance.secondary], range: span.range)
             case .marker, .emphasisMarker, .headingMarker:
                 // Completed headings and emphasis stay rendered while editing, including after shortcuts.
                 // Explicit source mode still exposes every delimiter for direct Markdown edits.
                 if showSyntax || (span.kind == .marker && NSIntersectionRange(active, span.range).length > 0) {
-                    storage.addAttribute(.foregroundColor, value: appearance.secondary, range: span.range)
+                    styled.addAttribute(.foregroundColor, value: appearance.secondary, range: span.range)
                 } else {
-                    storage.addAttributes([.hiddenMarkdown: true, .foregroundColor: NSColor.clear], range: span.range)
+                    styled.addAttributes([.hiddenMarkdown: true, .foregroundColor: NSColor.clear], range: span.range)
                 }
             }
         }
-        storage.endEditing()
+        var updates: [(range: NSRange, attributes: [NSAttributedString.Key: Any])] = []
+        var changedMarkers: [NSRange] = []
+        styled.enumerateAttributes(in: all) { attributes, range, _ in
+            storage.enumerateAttributes(in: range) { current, currentRange, _ in
+                guard !(attributes as NSDictionary).isEqual(to: current) else { return }
+                updates.append((currentRange, attributes))
+                if (attributes[.hiddenMarkdown] as? Bool == true) != (current[.hiddenMarkdown] as? Bool == true) {
+                    changedMarkers.append(currentRange)
+                }
+            }
+        }
+        if !updates.isEmpty {
+            storage.beginEditing()
+            for update in updates { storage.setAttributes(update.attributes, range: update.range) }
+            // TextKit does not know that our custom attribute changes glyph visibility.
+            // Invalidate only changed markers, before the batched edits trigger layout.
+            for range in changedMarkers {
+                view.layoutManager?.invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
+                view.layoutManager?.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+            }
+            storage.endEditing()
+        }
         view.typingAttributes = appearance.attributes
-        // Custom display attributes do not automatically invalidate generated glyphs.
-        view.layoutManager?.invalidateGlyphs(forCharacterRange: all, changeInLength: 0, actualCharacterRange: nil)
-        view.needsDisplay = true
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes indexes: UnsafePointer<Int>, font: NSFont, forGlyphRange range: NSRange) -> Int {
